@@ -6,7 +6,7 @@
 <!-- ═══════════════════ ANIMATED TYPING BANNER ═══════════════════ -->
 <br>
 <a href="https://github.com/samay825/ZorkOS-Termux">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=30&duration=3000&pause=800&color=00FF88&center=true&vCenter=true&multiline=true&repeat=true&width=800&height=100&lines=%E2%96%88%E2%96%93%E2%96%92%E2%96%91+ZORKOS+v2.0+%E2%96%91%E2%96%92%E2%96%93%E2%96%88;%F0%9F%94%A5+2026+Cyberpunk+Edition+%F0%9F%94%A5;%E2%9A%A1+Transform+Your+Terminal+%E2%9A%A1" alt="ZorkOS Animated Title" />
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=30&duration=3000&pause=800&color=00FF88&center=true&vCenter=true&multiline=true&repeat=true&width=900&height=100&lines=%E2%96%88%E2%96%93%E2%96%92%E2%96%91+ZORKOS+v2.0+%E2%96%91%E2%96%92%E2%96%93%E2%96%88;%F0%9F%94%A5+2026+Cyberpunk+Edition+%F0%9F%94%A5;%E2%9A%A1+Transform+Your+Terminal+%E2%9A%A1" alt="ZorkOS Animated Title" />
 </a>
 <br><br>
 
@@ -78,7 +78,7 @@
  ║   → 17+ Feature Modules  |  140+ ZSH Themes                  ║
  ║   → Security System  |  Achievement Engine                   ║
  ║                                                              ║
- ║   ⚡ No root required  ⚡ No bloat  ⚡ Pure power          |║
+ ║   ⚡ No root required  ⚡ No bloat  ⚡ Pure power          
  ║                                                              ║
  ╚══════════════════════════════════════════════════════════════╝
 ```
@@ -232,50 +232,7 @@ git clone https://github.com/samay825/ZorkOS-Termux && cd ZorkOS-Termux && chmod
 
 </div>
 
-```
-ZorkOS-Termux/
-│
-├── 🚀 install.sh                  # One-command installer
-├── 🎮 zork_customizer.sh          # Main menu & CLI interface
-│
-├── 📁 assets/
-│   └── 📊 motd.sh                 # Message of the Day engine
-│
-├── 🔊 bootsound/                  # Boot sound MP3 files
-│
-├── 🎨 configs/
-│   ├── 🌈 colors-*.properties     # 6 terminal color schemes
-│   └── ⚙️ termux.properties       # Termux configuration
-│
-├── 📚 lib/
-│   ├── 🔮 gradient_engine.sh      # Truecolor gradient renderer
-│   ├── 📐 responsive.sh           # Screen-adaptive layouts
-│   ├── ✨ animations.sh           # Boot animation engine (7 styles)
-│   ├── 🔐 auth_system.sh          # Multi-user auth + login UI
-│   ├── 🏆 achievements.sh         # XP & achievement tracker
-│   ├── 🏴 banners.sh              # 10+ ASCII banner styles
-│   ├── 🏷️ name_banner.sh          # FIGlet name banner generator
-│   ├── 📊 dashboard.sh            # System monitor dashboard
-│   ├── 💀 hacker_mode.sh          # Matrix-style terminal mode
-│   ├── 🖥️ screensaver.sh          # 4 screensaver styles
-│   ├── 🌤️ weather.sh              # Weather widget
-│   ├── 🍅 pomodoro.sh             # Focus timer
-│   ├── 📝 quick_notes.sh          # Notes system
-│   ├── 📌 bookmarks.sh            # Directory bookmarks
-│   ├── 🔌 plugin_manager.sh       # Oh-My-Zsh plugin manager
-│   ├── 💾 backup_restore.sh       # Config backup/restore
-│   └── ⚡ zshrc_generator.sh      # Dynamic .zshrc builder
-│
-├── 🎭 themes/
-│   ├── ⭐ zork-2026.zsh-theme     # Flagship (powerline + gradients)
-│   ├── 💜 zork-neon.zsh-theme
-│   ├── ⚪ zork-minimal.zsh-theme
-│   └── 📦 140+ more themes...
-│
-└── 🔌 plugins/                    # Bundled Oh-My-Zsh plugins
-```
 
-<br>
 
 <div align="center">
 <img src="https://user-images.githubusercontent.com/73097560/115834477-dbab4500-a447-11eb-908a-139a6edaec5c.gif" width="100%">
