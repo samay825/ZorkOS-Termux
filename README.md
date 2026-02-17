@@ -68,18 +68,18 @@
 
 ```
  ╔══════════════════════════════════════════════════════════════╗
- ║                                                              ║
- ║   ZorkOS is an all-in-one Termux terminal customization      ║
- ║   framework that transforms your boring Android terminal     ║
- ║   into a CYBERPUNK-STYLED POWERHOUSE.                        ║
- ║                                                              ║
- ║   One single command installs everything:                    ║
- ║   → Themes, Animations, Plugins, Fonts, Colors               ║
- ║   → 17+ Feature Modules  |  140+ ZSH Themes                  ║
- ║   → Security System  |  Achievement Engine                   ║
- ║                                                              ║
+ ║                                                              
+ ║   ZorkOS is an all-in-one Termux terminal customization      
+ ║   framework that transforms your boring Android terminal     
+ ║   into a CYBERPUNK-STYLED POWERHOUSE.                        
+ ║                                                              
+ ║   One single command installs everything:                    
+ ║   → Themes, Animations, Plugins, Fonts, Colors               
+ ║   → 17+ Feature Modules  |  140+ ZSH Themes                  
+ ║   → Security System  |  Achievement Engine                   
+ ║                                                              
  ║   ⚡ No root required  ⚡ No bloat  ⚡ Pure power          
- ║                                                              ║
+ ║                                                              
  ╚══════════════════════════════════════════════════════════════╝
 ```
 
