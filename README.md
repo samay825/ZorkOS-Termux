@@ -6,7 +6,7 @@
 <!-- ═══════════════════ ANIMATED TYPING BANNER ═══════════════════ -->
 <br>
 <a href="https://github.com/samay825/ZorkOS-Termux">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=30&duration=3000&pause=800&color=00FF88&center=true&vCenter=true&multiline=true&repeat=true&width=900&height=100&lines=%E2%96%88%E2%96%93%E2%96%92%E2%96%91+ZORKOS+v2.0+%E2%96%91%E2%96%92%E2%96%93%E2%96%88;%F0%9F%94%A5+2026+Cyberpunk+Edition+%F0%9F%94%A5;%E2%9A%A1+Transform+Your+Terminal+%E2%9A%A1" alt="ZorkOS Animated Title" />
+  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=30&duration=3000&pause=800&color=00FF88&center=true&vCenter=true&multiline=true&repeat=true&width=900&height=140&lines=%E2%96%88%E2%96%93%E2%96%92%E2%96%91+ZORKOS+v2.0+%E2%96%91%E2%96%92%E2%96%93%E2%96%88;%F0%9F%94%A5+2026+Cyberpunk+Edition+%F0%9F%94%A5;%E2%9A%A1+Transform+Your+Terminal+%E2%9A%A1" alt="ZorkOS Animated Title" />
 </a>
 <br><br>
 
