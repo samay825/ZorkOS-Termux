@@ -1,0 +1,630 @@
+#!/bin/bash
+
+ZORKOS_AUTH_DIR="${HOME}/.zorkos/auth"
+ZORKOS_AUTH_DB="${ZORKOS_AUTH_DIR}/users.db"
+ZORKOS_SESSION="${ZORKOS_AUTH_DIR}/session"
+ZORKOS_AUTH_LOG="${ZORKOS_AUTH_DIR}/auth.log"
+ZORKOS_AUTH_CONF="${ZORKOS_AUTH_DIR}/auth.conf"
+MAX_LOGIN_ATTEMPTS=5
+LOCKOUT_SECONDS=300
+IDLE_LOCK_SECONDS=600  # 10 min idle = auto-lock
+
+auth_init() {
+    mkdir -p "$ZORKOS_AUTH_DIR"
+    touch "$ZORKOS_AUTH_LOG"
+    
+    if [[ ! -f "$ZORKOS_AUTH_CONF" ]]; then
+        cat > "$ZORKOS_AUTH_CONF" << 'AUTHCONF'
+AUTH_ENABLED=false
+IDLE_LOCK=false
+IDLE_LOCK_SECONDS=600
+MAX_ATTEMPTS=5
+LOCKOUT_SECONDS=300
+LOGIN_BANNER=true
+BIOMETRIC_FALLBACK=false
+AUTHCONF
+    fi
+    source "$ZORKOS_AUTH_CONF" 2>/dev/null
+}
+
+_hash_password() {
+    local password="$1"
+    local salt="$2"
+    echo -n "${salt}:${password}" | sha256sum | cut -d' ' -f1
+}
+
+_gen_salt() {
+    head -c 16 /dev/urandom 2>/dev/null | xxd -p 2>/dev/null || \
+    cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-' | head -c 32 || \
+    date +%s%N | sha256sum | head -c 32
+}
+
+_auth_log() {
+    local event="$1"
+    local user="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ${event} | user=${user}" >> "$ZORKOS_AUTH_LOG"
+}
+
+auth_create_user() {
+    local username="$1"
+    local password="$2"
+    local role="${3:-user}"  # user or admin
+    
+    auth_init
+    
+    if [[ -f "$ZORKOS_AUTH_DB" ]] && grep -q "^${username}:" "$ZORKOS_AUTH_DB" 2>/dev/null; then
+        echo -e "  \033[38;2;255;60;60m✗ User '${username}' already exists${RST}"
+        return 1
+    fi
+    
+    local salt
+    salt=$(_gen_salt)
+    local hash
+    hash=$(_hash_password "$password" "$salt")
+    local created
+    created=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    echo "${username}:${salt}:${hash}:${role}:${created}:never:0:0" >> "$ZORKOS_AUTH_DB"
+    
+    _auth_log "USER_CREATED" "$username"
+    echo -e "  \033[38;2;0;255;136m✓ User '${username}' created (${role})${RST}"
+    return 0
+}
+
+auth_verify() {
+    local username="$1"
+    local password="$2"
+    
+    [[ ! -f "$ZORKOS_AUTH_DB" ]] && return 1
+    
+    local user_line
+    user_line=$(grep "^${username}:" "$ZORKOS_AUTH_DB" 2>/dev/null)
+    [[ -z "$user_line" ]] && return 1
+    
+    local salt hash stored_hash
+    salt=$(echo "$user_line" | cut -d':' -f2)
+    stored_hash=$(echo "$user_line" | cut -d':' -f3)
+    hash=$(_hash_password "$password" "$salt")
+    
+    [[ "$hash" == "$stored_hash" ]] && return 0 || return 1
+}
+
+_check_lockout() {
+    local username="$1"
+    local lockfile="${ZORKOS_AUTH_DIR}/.lockout_${username}"
+    
+    if [[ -f "$lockfile" ]]; then
+        local lock_time
+        lock_time=$(cat "$lockfile")
+        local now
+        now=$(date +%s)
+        local elapsed=$(( now - lock_time ))
+        
+        if [[ $elapsed -lt $LOCKOUT_SECONDS ]]; then
+            local remaining=$(( LOCKOUT_SECONDS - elapsed ))
+            echo -e "  \033[38;2;255;60;60m✗ Account locked. Try again in ${remaining}s\033[0m"
+            return 1
+        else
+            rm -f "$lockfile"
+            rm -f "${ZORKOS_AUTH_DIR}/.attempts_${username}"
+        fi
+    fi
+    return 0
+}
+
+_record_fail() {
+    local username="$1"
+    local attempts_file="${ZORKOS_AUTH_DIR}/.attempts_${username}"
+    local count=0
+    
+    [[ -f "$attempts_file" ]] && count=$(cat "$attempts_file")
+    count=$((count + 1))
+    echo "$count" > "$attempts_file"
+    
+    if [[ $count -ge $MAX_LOGIN_ATTEMPTS ]]; then
+        date +%s > "${ZORKOS_AUTH_DIR}/.lockout_${username}"
+        _auth_log "ACCOUNT_LOCKED" "$username"
+        echo -e "  \033[38;2;255;60;60m⚠ Account locked for ${LOCKOUT_SECONDS}s after ${MAX_LOGIN_ATTEMPTS} failed attempts\033[0m"
+    fi
+    
+    return $count
+}
+
+_create_session() {
+    local username="$1"
+    local session_id
+    session_id=$(_gen_salt)
+    
+    cat > "$ZORKOS_SESSION" << EOF
+SESSION_USER=${username}
+SESSION_ID=${session_id}
+SESSION_START=$(date +%s)
+SESSION_LAST_ACTIVE=$(date +%s)
+EOF
+    
+    if [[ -f "$ZORKOS_AUTH_DB" ]]; then
+        local now
+        now=$(date '+%Y-%m-%d %H:%M:%S')
+        local old_line new_line
+        old_line=$(grep "^${username}:" "$ZORKOS_AUTH_DB")
+        local login_count
+        login_count=$(echo "$old_line" | cut -d':' -f7)
+        login_count=$(( login_count + 1 ))
+        local xp
+        xp=$(echo "$old_line" | cut -d':' -f8)
+        xp=$(( xp + 10 ))  # +10 XP per login
+        
+        new_line=$(echo "$old_line" | awk -F: -v now="$now" -v lc="$login_count" -v xp="$xp" \
+            '{OFS=":"; $6=now; $7=lc; $8=xp; print}')
+        sed -i "s|^${username}:.*|${new_line}|" "$ZORKOS_AUTH_DB"
+    fi
+    
+    rm -f "${ZORKOS_AUTH_DIR}/.attempts_${username}"
+    
+    _auth_log "LOGIN_SUCCESS" "$username"
+    export ZORKOS_USER="$username"
+}
+
+auth_logout() {
+    if [[ -f "$ZORKOS_SESSION" ]]; then
+        source "$ZORKOS_SESSION"
+        _auth_log "LOGOUT" "$SESSION_USER"
+        rm -f "$ZORKOS_SESSION"
+    fi
+    unset ZORKOS_USER
+}
+
+auth_check_session() {
+    if [[ -f "$ZORKOS_SESSION" ]]; then
+        source "$ZORKOS_SESSION"
+        
+        if [[ "$IDLE_LOCK" == "true" ]]; then
+            local now
+            now=$(date +%s)
+            local idle=$(( now - SESSION_LAST_ACTIVE ))
+            if [[ $idle -gt $IDLE_LOCK_SECONDS ]]; then
+                _auth_log "IDLE_LOCK" "$SESSION_USER"
+                rm -f "$ZORKOS_SESSION"
+                return 1
+            fi
+        fi
+        
+        export ZORKOS_USER="$SESSION_USER"
+        return 0
+    fi
+    return 1
+}
+
+auth_touch_session() {
+    if [[ -f "$ZORKOS_SESSION" ]]; then
+        sed -i "s/^SESSION_LAST_ACTIVE=.*/SESSION_LAST_ACTIVE=$(date +%s)/" "$ZORKOS_SESSION"
+    fi
+}
+
+auth_get_xp() {
+    local username="${1:-$ZORKOS_USER}"
+    [[ ! -f "$ZORKOS_AUTH_DB" ]] && echo 0 && return
+    local xp
+    xp=$(grep "^${username}:" "$ZORKOS_AUTH_DB" | cut -d':' -f8)
+    echo "${xp:-0}"
+}
+
+auth_add_xp() {
+    local username="${1:-$ZORKOS_USER}"
+    local amount="${2:-1}"
+    
+    [[ ! -f "$ZORKOS_AUTH_DB" ]] && return
+    [[ -z "$username" ]] && return
+    
+    local old_line
+    old_line=$(grep "^${username}:" "$ZORKOS_AUTH_DB")
+    [[ -z "$old_line" ]] && return
+    
+    local old_xp
+    old_xp=$(echo "$old_line" | cut -d':' -f8)
+    local new_xp=$(( old_xp + amount ))
+    
+    local new_line
+    new_line=$(echo "$old_line" | awk -F: -v xp="$new_xp" '{OFS=":"; $8=xp; print}')
+    sed -i "s|^${username}:.*|${new_line}|" "$ZORKOS_AUTH_DB"
+}
+
+auth_get_level() {
+    local xp
+    xp=$(auth_get_xp "$1")
+    
+    if [[ $xp -ge 10000 ]]; then echo "LEGENDARY"
+    elif [[ $xp -ge 5000 ]]; then echo "MASTER"
+    elif [[ $xp -ge 2000 ]]; then echo "EXPERT"
+    elif [[ $xp -ge 1000 ]]; then echo "ADVANCED"
+    elif [[ $xp -ge 500 ]]; then echo "INTERMEDIATE"
+    elif [[ $xp -ge 100 ]]; then echo "BEGINNER"
+    else echo "NOOB"
+    fi
+}
+
+auth_get_level_color() {
+    local level
+    level=$(auth_get_level "$1")
+    case "$level" in
+        LEGENDARY)    echo "255;215;0" ;;
+        MASTER)       echo "255;0;200" ;;
+        EXPERT)       echo "200;100;255" ;;
+        ADVANCED)     echo "0;200;255" ;;
+        INTERMEDIATE) echo "0;255;136" ;;
+        BEGINNER)     echo "255;220;0" ;;
+        *)            echo "100;100;120" ;;
+    esac
+}
+
+auth_login_screen() {
+    auth_init
+    
+    source "$ZORKOS_AUTH_CONF" 2>/dev/null
+    [[ "$AUTH_ENABLED" != "true" ]] && return 0
+    
+    if auth_check_session; then
+        return 0
+    fi
+    
+    if [[ ! -f "$ZORKOS_AUTH_DB" ]] || [[ ! -s "$ZORKOS_AUTH_DB" ]]; then
+        _auth_first_time_setup
+        return $?
+    fi
+    
+    local RST="\033[0m"
+    local attempt=1
+    local cols rows gi gj bw bx by ti tg title tpad tag tagpad ainfo input_col vtext level xp level_color stxt wtxt ltxt etxt bg
+    
+    while true; do
+        clear
+        
+        cols=$(tput cols 2>/dev/null || echo 80)
+        rows=$(tput lines 2>/dev/null || echo 24)
+        tput civis 2>/dev/null
+        
+        for ((gi=1; gi<=rows; gi+=2)); do
+            for ((gj=1; gj<=cols; gj+=4)); do
+                printf "\033[%d;%dH\033[38;2;15;15;25m·" "$gi" "$gj"
+            done
+        done
+        
+        bw=48
+        [[ $cols -lt 55 ]] && bw=$(( cols - 8 ))
+        [[ $bw -lt 30 ]] && bw=30
+        bx=$(( (cols - bw - 4) / 2 ))
+        [[ $bx -lt 1 ]] && bx=1
+        by=$(( (rows - 18) / 2 ))
+        [[ $by -lt 2 ]] && by=2
+        
+        printf "\033[%d;%dH" "$by" "$bx"
+        for ((ti=0; ti<bw+4; ti++)); do
+            tg=$(( 40 + ti * 100 / (bw+4) ))
+            [[ $tg -gt 180 ]] && tg=180
+            printf "\033[38;2;0;%d;%dm▄" "$tg" $(( tg / 2 ))
+        done
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  ╭" $(( by + 1 )) "$bx"
+        for ((ti=0; ti<bw; ti++)); do printf "─"; done
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 2 )) "$bx"
+        
+        title="🔒  SECURE  LOGIN"
+        tpad=$(( (bw - ${#title}) / 2 ))
+        [[ $tpad -lt 0 ]] && tpad=0
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 3 )) "$bx"
+        printf "%*s" "$tpad" ""
+        printf "\033[1;38;2;0;255;200m%s" "$title"
+        
+        tag="Terminal Authentication System"
+        [[ $bw -lt 35 ]] && tag="Auth Required"
+        tagpad=$(( (bw - ${#tag}) / 2 ))
+        [[ $tagpad -lt 0 ]] && tagpad=0
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 4 )) "$bx"
+        printf "%*s" "$tagpad" ""
+        printf "\033[38;2;80;80;120m%s" "$tag"
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 5 )) "$bx"
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 6 )) "$bx"
+        printf "  \033[38;2;40;40;60m"
+        for ((ti=0; ti<bw-4; ti++)); do printf "─"; done
+        
+        ainfo="  Attempt ${attempt}/${MAX_LOGIN_ATTEMPTS}"
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 7 )) "$bx"
+        printf "\033[38;2;255;220;0m%s" "$ainfo"
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 8 )) "$bx"
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │  \033[38;2;0;200;255m 👤 Username: \033[0m" $(( by + 9 )) "$bx"
+        tput cnorm 2>/dev/null
+        input_col=$(( bx + 18 ))
+        printf "\033[%d;%dH" $(( by + 9 )) "$input_col"
+        read -r login_user
+        tput civis 2>/dev/null
+        
+        if ! _check_lockout "$login_user"; then
+            tput cnorm 2>/dev/null
+            sleep 2
+            continue
+        fi
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │  \033[38;2;200;100;255m 🔑 Password: \033[0m" $(( by + 10 )) "$bx"
+        tput cnorm 2>/dev/null
+        printf "\033[%d;%dH" $(( by + 10 )) "$input_col"
+        read -s login_pass
+        echo ""
+        tput civis 2>/dev/null
+        
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 12 )) "$bx"
+        vtext="  ⏳ Verifying credentials..."
+        printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[38;2;255;220;0m%s" $(( by + 12 )) "$bx" "$vtext"
+        sleep 0.4
+        
+        if auth_verify "$login_user" "$login_pass"; then
+            _create_session "$login_user"
+            
+            level=$(auth_get_level "$login_user")
+            xp=$(auth_get_xp "$login_user")
+            level_color=$(auth_get_level_color "$login_user")
+            
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 12 )) "$bx"
+            stxt="  ✓ ACCESS GRANTED"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[1;38;2;0;255;136m%s" $(( by + 12 )) "$bx" "$stxt"
+            
+            wtxt="  Welcome back, ${login_user}!"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[38;2;0;200;255m%s" $(( by + 13 )) "$bx" "$wtxt"
+            
+            ltxt="  ${level} — ${xp} XP"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[38;2;${level_color}m%s" $(( by + 14 )) "$bx" "$ltxt"
+            
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 15 )) "$bx"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  ╰" $(( by + 16 )) "$bx"
+            for ((ti=0; ti<bw; ti++)); do printf "─"; done
+            
+            printf "\033[%d;%dH" $(( by + 17 )) "$bx"
+            for ((ti=0; ti<bw+4; ti++)); do
+                bg=$(( 40 + ti * 80 / (bw+4) ))
+                printf "\033[38;2;0;%d;%dm▀" "$bg" $(( bg / 2 ))
+            done
+            
+            sleep 1.2
+            tput cnorm 2>/dev/null
+            clear
+            return 0
+        else
+            stxt="  ✗ ACCESS DENIED"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │" $(( by + 12 )) "$bx"
+            printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[1;38;2;255;60;60m%s" $(( by + 12 )) "$bx" "$stxt"
+            printf "\033[0m"
+            
+            _record_fail "$login_user"
+            _auth_log "LOGIN_FAILED" "$login_user"
+            
+            attempt=$((attempt + 1))
+            if [[ $attempt -gt $MAX_LOGIN_ATTEMPTS ]]; then
+                etxt="  ⚠ Maximum attempts exceeded"
+                printf "\033[%d;%dH\033[38;2;0;200;180m  │\033[38;2;255;60;60m%s" $(( by + 13 )) "$bx" "$etxt"
+                tput cnorm 2>/dev/null
+                sleep 2
+                exit 1
+            fi
+            sleep 1.2
+        fi
+    done
+}
+
+_auth_first_time_setup() {
+    local RST="\033[0m"
+    clear
+    
+    local cols rows
+    cols=$(tput cols 2>/dev/null || echo 80)
+    rows=$(tput lines 2>/dev/null || echo 24)
+    tput civis 2>/dev/null
+    
+    local pi pr pc chars
+    for ((pi=0; pi<40; pi++)); do
+        pr=$(( RANDOM % rows + 1 ))
+        pc=$(( RANDOM % cols + 1 ))
+        chars="·∙•◦"
+        printf "\033[%d;%dH\033[38;2;%d;%d;%dm%s" "$pr" "$pc" \
+            $(( 15 + RANDOM % 25 )) $(( 20 + RANDOM % 30 )) $(( 30 + RANDOM % 40 )) \
+            "${chars:$(( RANDOM % ${#chars} )):1}"
+    done
+    
+    local bw=50
+    [[ $cols -lt 58 ]] && bw=$(( cols - 8 ))
+    [[ $bw -lt 32 ]] && bw=32
+    local bx=$(( (cols - bw - 4) / 2 ))
+    [[ $bx -lt 1 ]] && bx=1
+    local by=$(( (rows - 20) / 2 ))
+    [[ $by -lt 2 ]] && by=2
+    
+    local ti tg
+    printf "\033[%d;%dH" "$by" "$bx"
+    for ((ti=0; ti<bw+4; ti++)); do
+        tg=$(( 60 + ti * 140 / (bw+4) ))
+        printf "\033[38;2;%d;0;%dm▄" "$tg" $(( tg * 2 / 3 ))
+        sleep 0.008
+    done
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  ╭" $(( by + 1 )) "$bx"
+    for ((ti=0; ti<bw; ti++)); do printf "─"; done
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 2 )) "$bx"
+    
+    local title="🔐  FIRST TIME SETUP"
+    local tpad=$(( (bw - ${#title}) / 2 ))
+    [[ $tpad -lt 0 ]] && tpad=0
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 3 )) "$bx"
+    printf "%*s" "$tpad" ""
+    printf "\033[1;38;2;255;0;200m%s" "$title"
+    
+    local stxt="Create your admin account"
+    local spad=$(( (bw - ${#stxt}) / 2 ))
+    [[ $spad -lt 0 ]] && spad=0
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 4 )) "$bx"
+    printf "%*s" "$spad" ""
+    printf "\033[38;2;200;100;255m%s" "$stxt"
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 5 )) "$bx"
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │  \033[38;2;40;40;60m" $(( by + 6 )) "$bx"
+    for ((ti=0; ti<bw-4; ti++)); do printf "─"; done
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 7 )) "$bx"
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │  \033[38;2;0;200;255m 👤 Choose username: \033[0m" $(( by + 8 )) "$bx"
+    tput cnorm 2>/dev/null
+    local input_col=$(( bx + 25 ))
+    printf "\033[%d;%dH" $(( by + 8 )) "$input_col"
+    read -r new_user
+    tput civis 2>/dev/null
+    
+    [[ -z "$new_user" ]] && { tput cnorm 2>/dev/null; echo -e "\n  \033[38;2;255;60;60m  ✗ Username cannot be empty${RST}"; sleep 1; _auth_first_time_setup; return $?; }
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │  \033[38;2;200;100;255m 🔑 Choose password: \033[0m" $(( by + 9 )) "$bx"
+    tput cnorm 2>/dev/null
+    printf "\033[%d;%dH" $(( by + 9 )) "$input_col"
+    read -s new_pass
+    echo ""
+    tput civis 2>/dev/null
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │  \033[38;2;255;220;0m 🔑 Confirm password: \033[0m" $(( by + 10 )) "$bx"
+    tput cnorm 2>/dev/null
+    printf "\033[%d;%dH" $(( by + 10 )) "$input_col"
+    read -s confirm_pass
+    echo ""
+    tput civis 2>/dev/null
+    
+    if [[ "$new_pass" != "$confirm_pass" ]]; then
+        printf "\033[%d;%dH\033[1;38;2;255;60;60m  ✗ Passwords don't match!${RST}" $(( by + 12 )) "$bx"
+        tput cnorm 2>/dev/null
+        sleep 1.5
+        _auth_first_time_setup
+        return $?
+    fi
+    
+    if [[ ${#new_pass} -lt 4 ]]; then
+        printf "\033[%d;%dH\033[1;38;2;255;60;60m  ✗ Password must be at least 4 chars${RST}" $(( by + 12 )) "$bx"
+        tput cnorm 2>/dev/null
+        sleep 1.5
+        _auth_first_time_setup
+        return $?
+    fi
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 11 )) "$bx"
+    
+    local ctxt="  ⏳ Creating admin account..."
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │\033[38;2;255;220;0m%s" $(( by + 12 )) "$bx" "$ctxt"
+    sleep 0.6
+    
+    auth_create_user "$new_user" "$new_pass" "admin"
+    _create_session "$new_user"
+    
+    sed -i 's/AUTH_ENABLED=.*/AUTH_ENABLED=true/' "$ZORKOS_AUTH_CONF"
+    
+    local stxt="  ✓ Admin account created!"
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │\033[1;38;2;0;255;136m%s" $(( by + 12 )) "$bx" "$stxt"
+    
+    local wtxt="  Welcome to ZorkOS, ${new_user}!"
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │\033[38;2;0;200;255m%s" $(( by + 13 )) "$bx" "$wtxt"
+    
+    printf "\033[%d;%dH\033[38;2;200;0;180m  │" $(( by + 14 )) "$bx"
+    printf "\033[%d;%dH\033[38;2;200;0;180m  ╰" $(( by + 15 )) "$bx"
+    for ((ti=0; ti<bw; ti++)); do printf "─"; done
+    
+    printf "\033[%d;%dH" $(( by + 16 )) "$bx"
+    local bg
+    for ((ti=0; ti<bw+4; ti++)); do
+        bg=$(( 60 + ti * 100 / (bw+4) ))
+        printf "\033[38;2;%d;0;%dm▀" "$bg" $(( bg * 2 / 3 ))
+    done
+    
+    tput cnorm 2>/dev/null
+    sleep 2
+    clear
+    return 0
+}
+
+auth_change_password() {
+    local username="${1:-$ZORKOS_USER}"
+    local RST="\033[0m"
+    
+    echo -ne "  \033[38;2;0;200;255m  Current password: ${RST}"
+    read -s old_pass
+    echo ""
+    
+    if ! auth_verify "$username" "$old_pass"; then
+        echo -e "  \033[38;2;255;60;60m  ✗ Wrong password${RST}"
+        return 1
+    fi
+    
+    echo -ne "  \033[38;2;0;200;255m  New password: ${RST}"
+    read -s new_pass
+    echo ""
+    echo -ne "  \033[38;2;0;200;255m  Confirm new password: ${RST}"
+    read -s confirm_pass
+    echo ""
+    
+    if [[ "$new_pass" != "$confirm_pass" ]]; then
+        echo -e "  \033[38;2;255;60;60m  ✗ Passwords don't match${RST}"
+        return 1
+    fi
+    
+    local salt
+    salt=$(_gen_salt)
+    local hash
+    hash=$(_hash_password "$new_pass" "$salt")
+    
+    local old_line
+    old_line=$(grep "^${username}:" "$ZORKOS_AUTH_DB")
+    local new_line
+    new_line=$(echo "$old_line" | awk -F: -v salt="$salt" -v hash="$hash" '{OFS=":"; $2=salt; $3=hash; print}')
+    
+    sed -i "s|^${username}:.*|${new_line}|" "$ZORKOS_AUTH_DB"
+    
+    _auth_log "PASSWORD_CHANGED" "$username"
+    echo -e "  \033[38;2;0;255;136m  ✓ Password changed successfully${RST}"
+}
+
+auth_list_users() {
+    [[ ! -f "$ZORKOS_AUTH_DB" ]] && { echo "  No users found."; return; }
+    
+    local RST="\033[0m"
+    echo ""
+    printf "  \033[38;2;0;200;255m%-12s %-8s %-20s %-6s %-8s${RST}\n" "Username" "Role" "Last Login" "Logins" "XP"
+    echo "  ──────────────────────────────────────────────────────────"
+    
+    local level level_color
+    while IFS=: read -r user salt hash role created last_login logins xp; do
+        level=$(auth_get_level "$user")
+        level_color=$(auth_get_level_color "$user")
+        printf "  \033[38;2;0;255;136m%-12s \033[38;2;200;100;255m%-8s \033[38;2;100;100;120m%-20s \033[38;2;255;220;0m%-6s \033[38;2;${level_color}m%-8s${RST}\n" \
+            "$user" "$role" "$last_login" "$logins" "${xp}(${level})"
+    done < "$ZORKOS_AUTH_DB"
+    echo ""
+}
+
+auth_delete_user() {
+    local username="$1"
+    [[ ! -f "$ZORKOS_AUTH_DB" ]] && return 1
+    
+    sed -i "/^${username}:/d" "$ZORKOS_AUTH_DB"
+    _auth_log "USER_DELETED" "$username"
+    echo -e "  \033[38;2;0;255;136m✓ User '${username}' deleted${RST}"
+}
+
+auth_view_log() {
+    if [[ -f "$ZORKOS_AUTH_LOG" ]]; then
+        echo ""
+        echo -e "  \033[38;2;0;200;255m  Recent Auth Events:${RST}"
+        echo ""
+        tail -20 "$ZORKOS_AUTH_LOG" | while read -r line; do
+            echo -e "  \033[38;2;100;100;120m  ${line}\033[0m"
+        done
+    else
+        echo "  No auth log found."
+    fi
+}
+
+auth_init
